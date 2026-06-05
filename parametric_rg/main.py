@@ -496,22 +496,42 @@ class PRG(object):
     # -----------------------------------------------------------------
     # MainProc  (Algorithm 4.1)
     # -----------------------------------------------------------------
-    def MainProc(self, Pin, Qin=None, max_vertices=20000):
+    def MainProc(self, Pin, Qin=None, max_vertices=20000, wall_timeout=None,
+                 progress_every=0):
         if Qin is None:
             Qin = []
         """Run the parametric RG on equations Pin (=0) and inequations Qin (!=0).
 
         Returns the list of consistent regular representations, each as
-        [A_list, S_list, N_list, W_list]."""
+        [A_list, S_list, N_list, W_list].
+
+        ``wall_timeout`` (seconds) and ``max_vertices`` bound the search; on
+        either limit we raise RuntimeError with the partial Decom attached to
+        the exception (``.partial``) so callers can record a time-boxed result.
+        """
+        import time as _time
         Decom = []
         NP = []
         root = [[], list(Pin), [], list(Qin), [], [], []]
         Br = [root]
         count = 0
+        t0 = _time.time()
         while Br:
             count += 1
             if count > max_vertices:
-                raise RuntimeError("vertex budget exceeded (%d)" % max_vertices)
+                e = RuntimeError("vertex budget exceeded (%d)" % max_vertices)
+                e.partial = (Decom, NP, len(Br), count)
+                raise e
+            if wall_timeout is not None and (_time.time() - t0) > wall_timeout:
+                e = RuntimeError("wall timeout (%ss) after %d vertices"
+                                 % (wall_timeout, count))
+                e.partial = (Decom, NP, len(Br), count)
+                raise e
+            if progress_every and count % progress_every == 0:
+                print("  [prg] vertex %d  |Br|=%d  |Decom|=%d  |NP|=%d  %.0fs"
+                      % (count, len(Br), len(Decom), len(NP), _time.time() - t0))
+                import sys as _sys
+                _sys.stdout.flush()
             cur = Br[0]
             Br = Br[1:]
             T = self.CheckBranch(cur)
