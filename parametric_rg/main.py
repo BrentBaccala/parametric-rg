@@ -32,6 +32,8 @@ from .paramring import ParamRing
 
 # vertex index names for readability
 A, P, D, Sineq, S2, N, W = 0, 1, 2, 3, 4, 5, 6
+LBL = 7   # optional trailing slot: a worklist label, set when a vertex is
+          # pushed onto Br (only used by the PRG_TRACE instrumentation)
 
 
 class PRG(object):
@@ -76,6 +78,59 @@ class PRG(object):
         if not Nlist:
             return expand(sympy.sympify(f))
         return self.PR.normal_form(f, Nlist)
+
+    # -----------------------------------------------------------------
+    # tracing helpers (PRG_TRACE) -- label & pretty-print worklist vertices
+    # -----------------------------------------------------------------
+    def _nterms(self, e):
+        """Number of monomials in e (a crude swell metric)."""
+        try:
+            return len(sympy.expand(sympy.sympify(e)).as_ordered_terms())
+        except Exception:
+            return -1
+
+    def _lds(self, p):
+        """Leading derivative of p as a compact string (or 'const')."""
+        try:
+            if is_constant(p):
+                return 'const'
+            return str(self.ld(p))
+        except Exception:
+            return '?'
+
+    def _short(self, e, n=64):
+        s = str(e)
+        return s if len(s) <= n else '%s..(%d terms)' % (s[:n], self._nterms(e))
+
+    def _fmt_entry(self, v, parent, rule, full):
+        """Render a sextuplet when it is entered into the tree.
+
+        A and P are shown by their *leaders* (the chain structure); the
+        parametric/inequation sets (Sineq, S2, N, W) are shown as short polys.
+        With PRG_TRACE=full every component is printed in full.
+        """
+        par = ('v#%s' % parent) if parent is not None else '(root)'
+        lines = ["  + v#%s  <- %s  [%s]" % (v[LBL], par, rule)]
+
+        def row(name, lst, mode):
+            if not lst:
+                return "       %-7s: -" % name
+            if full:
+                body = " ;  ".join(str(x) for x in lst)
+            elif mode == 'ld':
+                body = ", ".join(self._lds(x) for x in lst)
+            else:
+                body = ", ".join(self._short(x) for x in lst)
+            return "       %-7s: %s" % (name, body)
+
+        lines.append(row('A lead', v[A], 'ld'))
+        lines.append(row('P lead', v[P], 'ld'))
+        lines.append("       %-7s: %d pairs" % ('D', len(v[D])))
+        lines.append(row('Sineq', v[Sineq], 'short'))
+        lines.append(row('S2', v[S2], 'short'))
+        lines.append(row('N', v[N], 'short'))
+        lines.append(row('W', v[W], 'short'))
+        return "\n".join(lines)
 
     # -----------------------------------------------------------------
     # NewPCondition  (paper Find-New-ParCondition, Algorithm 4.4)
@@ -509,11 +564,37 @@ class PRG(object):
         either limit we raise RuntimeError with the partial Decom attached to
         the exception (``.partial``) so callers can record a time-boxed result.
         """
-        import time as _time
+        import time as _time, os as _os, sys as _sys
+        _tr = _os.environ.get('PRG_TRACE', '')
+        trace = bool(_tr)
+        full = (_tr.lower() == 'full')
+        _dump_at = _os.environ.get('PRG_DUMP_AT')   # label whose critical pair
+                                                    # (and chain) to dump in full
+        self._lblctr = 0
+
+        def _emit(s):
+            print(s)
+            _sys.stdout.flush()
+
+        def _enq(vlist, parent, rule):
+            """Assign a fresh label to each vertex as it enters the tree, print
+            its sextuplet (when tracing), and return the labelled list."""
+            out = []
+            for v in vlist:
+                v = list(v)
+                if len(v) <= LBL:
+                    v += [None] * (LBL + 1 - len(v))
+                self._lblctr += 1
+                v[LBL] = self._lblctr
+                if trace:
+                    _emit(self._fmt_entry(v, parent, rule, full))
+                out.append(v)
+            return out
+
         Decom = []
         NP = []
         root = [[], list(Pin), [], list(Qin), [], [], []]
-        Br = [root]
+        Br = _enq([root], None, 'root')
         count = 0
         t0 = _time.time()
         while Br:
@@ -530,62 +611,105 @@ class PRG(object):
             if progress_every and count % progress_every == 0:
                 print("  [prg] vertex %d  |Br|=%d  |Decom|=%d  |NP|=%d  %.0fs"
                       % (count, len(Br), len(Decom), len(NP), _time.time() - t0))
-                import sys as _sys
                 _sys.stdout.flush()
             cur = Br[0]
             Br = Br[1:]
+            clbl = cur[LBL] if len(cur) > LBL else '?'
+            _vt = _time.time()
             T = self.CheckBranch(cur)
             if T is False:
+                if trace:
+                    _emit(">> v#%s  => NP (CheckBranch: inconsistent)  %.1fs"
+                          % (clbl, _time.time() - _vt))
                 NP.append(cur)
                 continue
             V = T
+            if trace:
+                _emit(">> v#%s  processing  |A|=%d |P|=%d |D|=%d |N|=%d |W|=%d"
+                      % (clbl, len(V[A]), len(V[P]), len(V[D]),
+                         len(V[N]), len(V[W])))
             if V[D]:
                 # solve a critical pair via its DeltaPolynomial
                 pair = V[D][0]
+                if _dump_at is not None and str(clbl) == _dump_at:
+                    _emit("==== DUMP critical pair at v#%s  (chain |A|=%d) ====" % (clbl, len(V[A])))
+                    _emit("  pair[0] (ld=%s) = %s" % (self._lds(pair[0]), sympy.sympify(pair[0])))
+                    _emit("  pair[1] (ld=%s) = %s" % (self._lds(pair[1]), sympy.sympify(pair[1])))
+                    for _i, _a in enumerate(V[A]):
+                        _emit("  A[%d] (ld=%s) = %s" % (_i, self._lds(_a), sympy.sympify(_a)))
+                    _sys.stdout.flush()
+                _td = _time.time()
                 q = DeltaPolynomial(self.R, pair[0], pair[1], self.derivations)
+                _n0, _t0d = self._nterms(q), _time.time() - _td
+                if _dump_at is not None and str(clbl) == _dump_at:
+                    _emit("  >> Δ computed: %d terms in %.1fs; now reducing by chain (diffprem)..." % (_n0, _t0d))
+                    _sys.stdout.flush()
                 # par-rga reduces q by the parameter-derivatives first; those are
                 # 0 on the stock binding (parameters are constants), so skip.
+                _tp = _time.time()
                 q = expand(self.diffprem(q, V[A]))
+                _n1, _t1d = self._nterms(q), _time.time() - _tp
                 if V[N]:
                     q = self.nf(q, V[N])
                 q = SIM(q)
+                if trace:
+                    _emit("     D-pair Δ(%s, %s): Δ=%d terms (%.1fs)  ->diffprem=%d terms (%.1fs)  ->reduced=%d terms"
+                          % (self._lds(pair[0]), self._lds(pair[1]),
+                             _n0, _t0d, _n1, _t1d, self._nterms(q)))
                 if is_constant(q) and q != 0:
+                    if trace: _emit("     => NP (Δ reduces to a nonzero constant)")
                     NP.append(V)
                 elif q == 0:
                     nv = list(V)
                     nv[D] = Extract(V[D], [V[D][0]])
-                    Br = [nv] + Br
+                    if trace: _emit("     => Δ=0: pair already implied; drop it, requeue")
+                    Br = _enq([nv], clbl, 'Δ=0 drop-pair') + Br
                 else:
                     q = DIVIDE(q, list(ADD(V[S2], V[Sineq])) + list(V[W]))
                     if is_constant(q):
+                        if trace: _emit("     => NP (constant after DIVIDE)")
                         NP.append(V)
                     else:
                         v1 = list(V)
                         v1[D] = Extract(V[D], [V[D][0]])
                         Br4 = self.MakeTree(q, v1)
-                        Br = list(Br4) + Br
+                        if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
+                                        % (self._lds(q), len(Br4)))
+                        Br = _enq(Br4, clbl, 'MakeTree/D') + Br
             elif V[P]:
                 q = V[P][0]
+                _qld = self._lds(q)
                 if V[N]:
                     q = self.nf(q, V[N])
+                _tp = _time.time()
                 q = expand(self.diffprem(q, V[A]))
+                _t1d = _time.time() - _tp
                 q = SIM(q)
+                if trace:
+                    _emit("     P-eqn (ld=%s) ->diffprem=%d terms (%.1fs)"
+                          % (_qld, self._nterms(q), _t1d))
                 if is_constant(q) and q != 0:
+                    if trace: _emit("     => NP (eqn reduces to a nonzero constant)")
                     NP.append(V)
                 elif q == 0:
                     nv = list(V)
                     nv[P] = Extract(V[P], [V[P][0]])
-                    Br = [nv] + Br
+                    if trace: _emit("     => eqn=0: already implied; drop it, requeue")
+                    Br = _enq([nv], clbl, 'eqn=0 drop') + Br
                 else:
                     q = DIVIDE(q, list(ADD(V[S2], V[Sineq])) + list(V[W]))
                     if is_constant(q):
+                        if trace: _emit("     => NP (constant after DIVIDE)")
                         NP.append(V)
                     else:
                         v1 = list(V)
                         v1[P] = Extract(V[P], [V[P][0]])
                         Br4 = self.MakeTree(q, v1)
-                        Br = list(Br4) + Br
+                        if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
+                                        % (self._lds(q), len(Br4)))
+                        Br = _enq(Br4, clbl, 'MakeTree/P') + Br
             else:
+                if trace: _emit("     => Decom (terminal regular system)  ✓")
                 Decom.append(V)
         # assemble [A, S+S2, N, W] for each terminal vertex
         systems = [[V[A], ADD(V[Sineq], V[S2]), V[N], V[W]] for V in Decom]
