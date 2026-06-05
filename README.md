@@ -107,7 +107,53 @@ drop them. Everything else maps directly onto the binding.
 * Hydrogen (joca): the §1.12 cross-check **passes** — all 5 of joca.sage's
   minimal associated primes are exactly the parametric cells on which the PDE
   is redundant modulo the ansatz. The direct parametric-RG run on the ansatz
-  is time-boxed by per-vertex coefficient swell (not parameter-tree
-  explosion).
+  does **not** terminate; it is time-boxed by per-vertex coefficient swell in
+  the differential reduction (not a parameter-tree explosion). See
+  *Why the direct hydrogen run blows up* below for the localised cause.
 
 See `~/project/reports/parametric-rg-port.md` for the full write-up.
+
+## Why the direct hydrogen run blows up
+
+The parametric branching is cheap and stays small (`|Br| ≤ 4`, the generic
+cell carries no parameter conditions): **the entire intractability is the
+classical differential reduction**, and it has a single concrete cause.
+
+Traced with `PRG_TRACE=1` (and the offending vertex dumped with
+`PRG_DUMP_AT`), the run wedges on one vertex whose regular chain has reached
+
+```
+A[0]  (ld r)      r² − x² − y² − z²          ← the radius, carried ALGEBRAICALLY
+A[1]  (ld v)      v − v₁x − v₂y − v₃z − v₄r
+A[2..4] (Ψ_x,Ψ_y,Ψ_z)  chain-rule relations; their initials are r
+A[5],A[6] (Ψ_·y, Ψ_·x)  already degree 8–9 in x,y,z
+```
+
+The critical pair between `A[5]` and `A[6]` builds a Δ-polynomial of ~2200
+terms (~20 s) and then **hangs in the `diffprem` reduction** against this
+chain. The reason is visible in the monomials: the chain elements carry powers
+of the radius `r^{2k} = (x²+y²+z²)^k` written out in Cartesian coordinates as
+expanded multinomials — `A[5]` carries `r⁶` (each group is the 10-monomial
+`(x²+y²+z²)³`), `A[6]` carries `r⁸` (the 15-monomial `(x²+y²+z²)⁴`). Because
+the initials of `A[2..4]` are `r`, every reduction step multiplies through and
+the radical relation `r² = x²+y²+z²` forces re-expansion, so each differential
+step raises the power and blooms it into `C(k+2,2)` monomials. This is the
+BLAD `bad_remainder_irreducible_factorwise` swell that NewMethod §1.12
+motivates, now pinned to a specific pair.
+
+The geometric reading: the coordinate that makes this problem *clean* is the
+**parabolic** `ξ = x + r` (in which the hydrogen ansatz reduces in three lines
+to Bessel's equation, `Ψ = J₀(2√(x+r))`). Carried algebraically in Cartesian
+coordinates instead, that same `r` is exactly what detonates the elimination.
+
+Instrumentation (env-gated, no effect on normal runs):
+
+* `PRG_TRACE=1` — label each sextuplet as it enters the worklist and print it;
+  on processing, print the per-step Δ / diffprem term-counts, timings, and
+  disposition. `PRG_TRACE=full` prints every component in full.
+* `PRG_DUMP_AT=<label>` — dump that vertex's critical pair and whole chain in
+  full just before the (runaway) reduction, splitting the Δ-compute cost from
+  the diffprem-reduce cost.
+* `PRG_RUN=0` skips the direct run (cross-check only); `PRG_WALL`, `PRG_BUDGET`
+  bound it (note: the wall guard is cooperative — it fires between vertices,
+  not inside a single runaway BLAD reduction).
