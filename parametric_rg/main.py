@@ -496,7 +496,9 @@ class PRG(object):
     # -----------------------------------------------------------------
     # MainProc  (Algorithm 4.1)
     # -----------------------------------------------------------------
-    def MainProc(self, Pin, Qin, max_vertices=20000):
+    def MainProc(self, Pin, Qin=None, max_vertices=20000):
+        if Qin is None:
+            Qin = []
         """Run the parametric RG on equations Pin (=0) and inequations Qin (!=0).
 
         Returns the list of consistent regular representations, each as

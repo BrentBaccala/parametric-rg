@@ -109,14 +109,21 @@ class ParamRing(object):
         polynomial in the differential variables, reduce each coefficient
         (which lives in QQ[parms]) modulo <N>."""
         f = sympy.expand(f)
-        diffvars = sorted(f.free_symbols - set(self.parms), key=str)
-        if not diffvars:
+        # the differential generators are derivative jets + dependent-variable
+        # applications (NOT the bare independent variables inside them).
+        jets = sorted(f.atoms(sympy.Derivative) | f.atoms(sympy.Function), key=str)
+        if not jets:
             return self.normal_form(f, N)
+        # substitute jets -> placeholder symbols so sympy.Poly treats them as gens
+        placeholders = {j: sympy.Symbol('_J%d' % i) for i, j in enumerate(jets)}
+        inv = {v: k for k, v in placeholders.items()}
+        fsub = f.xreplace(placeholders)
+        gensyms = [placeholders[j] for j in jets]
         Nlist = [self.to_sage(p) for p in N if sympy.sympify(p) != 0]
         if not Nlist:
             return f
         I = self.R.ideal(Nlist)
-        poly = sympy.Poly(f, *diffvars)
+        poly = sympy.Poly(fsub, *gensyms)
         result = sympy.Integer(0)
         for monom, coeff in poly.terms():
             csym = sympy.expand(coeff)
@@ -125,10 +132,10 @@ class ParamRing(object):
             else:
                 cred = csym
             term = cred
-            for v, e in zip(diffvars, monom):
+            for v, e in zip(gensyms, monom):
                 term = term * v**int(e)
             result = result + term
-        return sympy.expand(result)
+        return sympy.expand(result.xreplace(inv))
 
     def ideal_membership(self, f, N):
         """True if f in <N> (lex Groebner).  Analogue of IdealMembership."""

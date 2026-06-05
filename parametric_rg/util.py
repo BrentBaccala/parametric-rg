@@ -73,6 +73,13 @@ def ADD(L, M):
 
 
 def _same(a, b):
+    # structural comparison for critical pairs (tuples/lists of polynomials)
+    if isinstance(a, (tuple, list)) or isinstance(b, (tuple, list)):
+        if not (isinstance(a, (tuple, list)) and isinstance(b, (tuple, list))):
+            return False
+        if len(a) != len(b):
+            return False
+        return all(_same(x, y) for x, y in zip(a, b))
     return expand(sympy.sympify(a) - sympy.sympify(b)) == 0
 
 
