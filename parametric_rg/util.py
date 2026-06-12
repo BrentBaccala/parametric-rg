@@ -48,17 +48,25 @@ def RZ(L):
 
 
 def SIM(f):
-    """Normalise numeric content: divide by gcd of integer coefficients."""
-    f = expand(sympy.sympify(f))
+    """Maple SIM: divide by the integer content of ``expand(f)`` but PRESERVE
+    f's structure -- a factored product stays a product.
+
+    Faithful to par-rga's ``f / GCD([coeffs(expand(f))])`` (NOT the earlier
+    ``expand(primitive(f))``).  The two agree on any already-expanded input;
+    they differ only when ``f`` is a product, which happens deliberately in
+    ``Branch`` where SIM is applied to ``factor(p)`` and the product structure
+    (``type(h,'*')`` / ``h.func == Mul``) decides the per-factor branching.
+    Re-expanding there silently killed that branch."""
+    f = sympy.sympify(f)
     if f == 0:
         return S.Zero
     try:
-        cont, prim = sympy.primitive(f)
+        cont, _prim = sympy.primitive(expand(f))
     except Exception:
         return f
-    if cont == 0:
+    if cont == 0 or cont == 1:
         return f
-    return expand(prim)
+    return f / cont
 
 
 def ADD(L, M):
