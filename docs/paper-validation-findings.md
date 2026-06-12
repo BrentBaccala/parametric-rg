@@ -18,15 +18,21 @@ original: `~/project/rahmani/par-rga.txt`.
 1. **`SIM` was unfaithful** to the Maple original and silently disabled
    `Branch`'s per-factor product split. Fixed in commit `0363799`
    (`SIM: preserve product structure`). The fix is a no-op at every other
-   call site (audited) and recovers a real missing split.
+   call site (audited) and is faithful to Maple — but on P3 its only effect
+   was to add one more *redundant* component (15→16), not to approach the
+   paper (see §3).
 2. **The example test suite does not reproduce the paper.** It checks loose
    lower bounds (`>=2`, `>=8`) plus self-consistency, never exact counts or
    per-cell content. example3 produces 16 regular systems where the paper's
-   Table 2 has **8 cases / 17 components** — a mismatch the `>=8` floor hides.
-3. **`SIM` was necessary but not sufficient** for P3. After the fix, example3
-   moves 15 → 16 systems but still diverges from the paper (10 overlapping
-   cases vs 8 clean ones; one component still dropped on the generic side).
-   A second, distinct divergence remains in the parametric-condition layer.
+   Table 2 has **8 cases / 17 listings** — a mismatch the `>=8` floor hides.
+3. **P3 root cause: the port OVER-produces, it does not under-produce.** vs
+   stock `RosenfeldGroebner` the port has *extra* components — redundant `v=0`
+   branches (initial-degenerate case of the non-monic first equation),
+   contained in broader ones. Fakouri's algorithm has **no** redundancy
+   removal (`par-rga.txt` confirmed: only `checkregular`, which drops
+   *inconsistent* not *contained* systems); the paper's tables are a minimal /
+   curated presentation. An opt-in `remove_redundant` post-pass (§3.1) is
+   sound but over-collapses, so it doesn't reproduce the paper either.
 4. **P2's port output and the paper's printed P2 differ as polynomial sets**
    but are the **same ideal** — a presentation difference, not a bug. Any
    future "matches the paper" assertion must compare *saturated ideals*, not
@@ -104,34 +110,70 @@ post-fix; should be ~17) pass as green.
 
 ---
 
-## 3. P3 after the fix: closer, still wrong
+## 3. P3 root cause: the port OVER-produces (redundant components)
 
-Grouping example3's output by case `(N, W)`:
+Earlier drafts of this doc guessed the port *under*-produced (a "dropped
+component", "factorable reductions"). **That was wrong** — ground truth
+(stock `RosenfeldGroebner` at specialised points) reverses it:
 
-- **pre-fix:** 9 cases, 15 components.
-- **post-fix:** 10 cases, 16 components. The fix split the `c=0` region,
-  adding a `c=0, b≠0` cell (`W={a,a+1,b}`, 2 components) — a genuine recovered
-  split.
+| point | stock RG | port (cells valid) | extra |
+|---|---|---|---|
+| `(2,3,5)` generic | 3 | **4** | `[v, ux, uyy]` (v=0) |
+| `(2,0,5)` b=0 | 2 | **3** | `[v, ux, uyy]` |
+| `(2,3,0)` c=0 | 3 | 3 | — |
+| `(-1,3,5)` a+1=0 | 2 | **3** | `[v, ux, uyy]` |
 
-Residual divergences from the paper's Table 2 (8 clean cases / 17 components):
+The port's decomposition is **complete and correct** (same solution set as
+stock RG) but **non-minimal**: it carries redundant `v=0` components, each
+strictly contained in a broader one (`{v=0,ux=0,auyy=1} ⊊ {ux=0,auyy=1}`,
+proved by the regular-chain membership test — *not* the Ritt problem).
 
-1. **Overlapping `b`-unconstrained cells.** Port case 1 (`W={a,a+1,c}`,
-   `b` free) *contains* case 0 (`b≠0`) and case 6 (`b=0`); case 8 (`c=0`,
-   `b` free) overlaps case 9. The paper's cases form a partition; the port
-   emits redundant coarser cells alongside the finer ones. Suggests the
-   parametric-condition layer (`NewPCondition`/`MakeTree`) is not forcing
-   `b` into `N` or `W` on the generic branch.
-2. **A component still dropped on the generic side.** Case 0: 2 vs paper's 3;
-   cases 6, 7: 1 vs paper's 2. The `a+1 = 0` side is a *perfect* match
-   (3,2,1,1 components) — the divergence lives entirely on the generic
-   `a+1 ≠ 0` side, i.e. where the leading `(a+1)·u_xx²` term is present and
-   factorable reductions occur.
+**Where the `v=0` branch comes from (traced):** the first equation
+`(a+1)·u_xx²·v + b·u_xx·v + c·u_x` is degree 2 in its leader `u_xx`, with
+initial `(a+1)·v`. At the root, `Branch`'s two-conditions arm spawns the
+**initial-degenerate** branch `initial = 0`, i.e. `(a+1)v = 0` → (on
+`a+1≠0`) `v = 0`. It's a *legitimate* branch (a non-monic leader's
+coefficient may vanish), created at the root where `Sineq` is **empty** — so
+Proposition 4.2 has no inequation to forbid it. It then yields the redundant
+`{v=0,ux=0,auyy=1}`.
 
-Conclusion: `SIM` was *a* cause, not the only one. At least one further
-divergence remains, most likely in the parametric branching / `(N,W)`
-canonicalization. Next step: instrument `MakeTree`/`NewPCondition` on P3's
-generic branch to locate where `b≠0`/`b=0` fails to register and where the
-missing component is pruned.
+**Why the paper's Table 2 omits it — there is no algorithmic pruning.**
+`grep` confirms `par-rga.txt` has **no** redundancy / inclusion / containment
+/ minimality step; `MainProc`'s only filter is `checkregular`, which removes
+**inconsistent** systems (`1 ∈ [A]:S^∞`), never **redundant** (contained)
+ones. The `v=0` component is consistent, so it survives. Proposition 4.2 (the
+paper's "criterion for reducing ineffectual branches") removes a *different*
+class — factors forbidden by an inequation already in `S` — and does not
+touch these. So **the paper's tables are a minimal / curated presentation**;
+the authors evidently dropped the contained components (cross-checked against
+BLAD, which *does* eliminate redundancy → 3 not 4). There is no algorithmic
+justification for the removal inside the published method.
+
+Corollary: the `SIM` fix (§1) is faithful to Maple but its only P3 effect was
+to add *one more* redundant component (15→16); it did not move toward the
+paper, because the paper's gap is redundancy, which `SIM` does not govern.
+
+### 3.1 The `remove_redundant` post-pass (opt-in, experimental)
+
+`MainProc(..., minimal=True)` (default **off**) drops a component `C` when the
+others that differentially contain it (`V(C) ⊆ V(A_i)`) cover `cell(C)` in
+parameter space (a constructible cell-cover check over `ParamRing`). It is the
+principled, *decidable* containment removal — but it **does not reproduce the
+paper's tables**, for two reasons established by testing:
+
+1. **It over-collapses.** Where a characterizable component is reducible
+   (`V = V(P₁) ∪ V(P₂)`), it keeps only the coarse cover and drops the finer
+   prime-ish pieces the paper lists separately. Verified **sound** on P1/P3
+   (the kept union still covers stock RG's components at specialised points),
+   but the result is *coarser* than the paper: P1 `4→2`, P3 `16→13`.
+2. **Parametric soundness is uncertified.** `_diff_contains` reduces over
+   `ℚ(params)`, so it could in principle report a containment that holds only
+   generically, not on all of `cell(C) ∩ cell(A_i)`.
+
+So matching the paper's exact granularity is *between* the raw output
+(over-produces, redundant) and this post-pass (over-collapses, coarser): it
+needs cell-refined, prime-level irredundancy, not global `V`-containment.
+Left as opt-in/experimental; the default stays faithful to `par-rga.txt`.
 
 ---
 
