@@ -549,10 +549,109 @@ class PRG(object):
         return out
 
     # -----------------------------------------------------------------
+    # remove_redundant  (minimal-decomposition post-pass; NOT in par-rga)
+    # -----------------------------------------------------------------
+    def _diff_contains(self, A_chain, C_chain):
+        """True if V(C) subset V(A): every generator of the chain A reduces to
+        0 modulo the regular chain C (membership in sat(C) = {C}).
+
+        Sound but not complete -- a false 'no' (e.g. across mismatched leader
+        sets, where leader-directed reduction can stall) only leaves a
+        redundant component in place; it never reports a containment that does
+        not hold, so it cannot drop an essential component."""
+        if not C_chain:
+            return all(sympy.expand(sympy.sympify(g)) == 0 for g in A_chain)
+        for g in A_chain:
+            try:
+                if sympy.expand(self.diffprem(g, C_chain)) != 0:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def _cell_empty(self, Z, NZ):
+        """Is the constructible cell  V(Z) \\ V(prod NZ)  empty?
+
+        Empty iff prod(NZ) vanishes on all of V(Z), i.e. prod(NZ) in
+        radical(<Z>).  With no zero-conditions the cell is a complement of a
+        hypersurface (non-empty); with prod(NZ)==0 it is empty."""
+        prod = sympy.Integer(1)
+        for w in NZ:
+            prod = sympy.expand(prod * sympy.sympify(w))
+        if sympy.sympify(prod) == 0:
+            return True
+        if not Z:
+            return False
+        return self.PR.radical_membership(prod, list(Z)) is True
+
+    def _cell_covered(self, cellC, container_cells):
+        """Is cell(C)=(N_C, W_C) covered by the union of container_cells (each
+        an (N, W) pair)?  Computes  cell(C) minus the union  as a list of
+        constructible (zeros, nonzeros) regions -- subtracting a cell (Na=0,
+        Wa!=0) splits a region into {n!=0 for n in Na} and {w==0 for w in Wa}
+        -- and reports True iff every surviving region is empty."""
+        Nc, Wc = cellC
+        regions = [(list(Nc), list(Wc))]
+        for (Na, Wa) in container_cells:
+            nxt = []
+            for (Z, NZ) in regions:
+                for n in Na:
+                    nxt.append((Z, NZ + [n]))        # region & {n != 0}
+                for w in Wa:
+                    nxt.append((Z + [w], NZ))        # region & {w == 0}
+            regions = [(Z, NZ) for (Z, NZ) in nxt if not self._cell_empty(Z, NZ)]
+            if not regions:
+                return True
+        return len(regions) == 0
+
+    def remove_redundant(self, systems):
+        """OPT-IN, EXPERIMENTAL.  Drop components whose solution set is covered
+        by the union of the others.  NOT part of Fakouri's algorithm (par-rga
+        emits every consistent regular representation, redundant ones included,
+        e.g. the initial-degenerate v=0 branch of a non-monic equation), so it
+        is off by default; MainProc(..., minimal=True) enables it.
+
+        A component C is dropped if the other components that differentially
+        contain it (V(C) subset V(A_i), tested by reducing A_i's generators
+        modulo C's chain) already cover cell(C) in parameter space.  Removed one
+        at a time so duplicates are not both dropped.
+
+        CAVEATS -- this does NOT reproduce the paper's tables.
+          * It over-collapses: where a characterizable component is reducible
+            (V = V(P1) u V(P2)), it keeps only the coarse cover and drops the
+            finer pieces the paper lists separately.  Verified sound on P1/P3
+            (the kept union still covers stock RosenfeldGroebner's components)
+            but coarser than the published decomposition.
+          * Soundness relies on V(C) subset V(A_i) holding on all of
+            cell(C) ∩ cell(A_i); the diffprem test reduces over Q(params) and
+            could in principle report a containment that holds only generically.
+            Not certified at special parameter values."""
+        systems = list(systems)
+        changed = True
+        while changed:
+            changed = False
+            for idx in range(len(systems)):
+                C = systems[idx]
+                C_chain = [p for p in C[0] if sympy.sympify(p) != 0]
+                container_cells = []
+                for j, Ao in enumerate(systems):
+                    if j == idx:
+                        continue
+                    A_chain = [p for p in Ao[0] if sympy.sympify(p) != 0]
+                    if self._diff_contains(A_chain, C_chain):
+                        container_cells.append((list(Ao[2]), list(Ao[3])))
+                if container_cells and self._cell_covered(
+                        (list(C[2]), list(C[3])), container_cells):
+                    del systems[idx]
+                    changed = True
+                    break
+        return systems
+
+    # -----------------------------------------------------------------
     # MainProc  (Algorithm 4.1)
     # -----------------------------------------------------------------
     def MainProc(self, Pin, Qin=None, max_vertices=20000, wall_timeout=None,
-                 progress_every=0):
+                 progress_every=0, minimal=False):
         if Qin is None:
             Qin = []
         """Run the parametric RG on equations Pin (=0) and inequations Qin (!=0).
@@ -714,6 +813,8 @@ class PRG(object):
         # assemble [A, S+S2, N, W] for each terminal vertex
         systems = [[V[A], ADD(V[Sineq], V[S2]), V[N], V[W]] for V in Decom]
         de = self.checkregular(systems)
+        if minimal:
+            de = self.remove_redundant(de)
         return de
 
 
