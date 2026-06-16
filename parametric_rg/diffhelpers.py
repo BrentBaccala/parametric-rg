@@ -16,8 +16,16 @@ def deg_in(R, p, leader):
 
 
 def factor_deriv(R, deriv):
-    """[theta, symb] as a 2-list (Maple FactorDerivative)."""
-    theta, symb = R.factor_derivative(deriv)
+    """[theta, symb] as a 2-list (Maple FactorDerivative).
+
+    An independent variable (a derivation) is not a dependent-variable jet; the
+    binding raises 'dependent variable expected' on it.  Treat it as its own
+    trivial factor [1, deriv] so leaderreduced / isreduceble / update see it as
+    a non-jet (hence non-reducible, forming no differential critical pairs)."""
+    try:
+        theta, symb = R.factor_derivative(deriv)
+    except RuntimeError:
+        return [Integer(1), deriv]
     return [sympy.sympify(theta), symb]
 
 

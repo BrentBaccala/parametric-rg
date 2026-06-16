@@ -59,17 +59,34 @@ class PRG(object):
     def degld(self, p):
         return deg_in(self.R, p, self.ld(p))
 
+    def _indep_leader(self, e):
+        """True if e's leader is an independent variable (a derivation symbol):
+        e is then a relation among the derivations with no jet content, not a
+        differential equation -- it cannot act as a differential reductor, and
+        the binding's differential_prem rejects it ('independent polynomial')."""
+        try:
+            lead = self.ld(e)
+        except Exception:
+            return False
+        return any(lead == d for d in self.derivations)
+
     def diffprem(self, p, redset, mode='full'):
         """ParmDiffRed: differential pseudo-remainder of p by redset.
 
         par-rga adjoins the parameters' derivatives ``parms[j][vars[i]]`` to the
         reduction set.  On the stock Python binding the parameters are genuine
         constants, so their derivatives are literally 0 and contribute nothing;
-        we therefore drop them (and any other zero) from the redset.  The
-        reduction by the chain itself is unchanged."""
-        full_redset = [r for r in redset if sympy.sympify(r) != 0]
+        we therefore drop them (and any other zero) from the redset.  We also drop
+        reductors whose leader is an independent variable -- those are relations
+        among the derivations (parameter conditions), carry no differential leader
+        to reduce by, and make the binding throw.  The reduction by the genuine
+        differential chain is unchanged."""
+        full_redset = [r for r in redset
+                       if sympy.sympify(r) != 0 and not self._indep_leader(r)]
         if not full_redset:
             return expand(sympy.sympify(p))
+        if self._indep_leader(p):
+            return expand(sympy.sympify(p))   # no jet content -> nothing to reduce
         h, r = self.R.differential_prem(p, full_redset, mode)
         return r
 
@@ -149,6 +166,34 @@ class PRG(object):
         cands += [(rank[sympy.srepr(d)], 1, i, 'D') for i, d in enumerate(Dl)]
         _r, _k, i, kind = min(cands)
         return (kind, i)
+
+    def _indep_leader_coeffs(self, q):
+        """Handle an equation whose leader is an independent variable.
+
+        Dependent-variable jets rank above the derivations, so a derivation-symbol
+        leader means q carries NO jet content -- it is a polynomial in x,y,z over
+        the parameter ring.  Since x,y,z are free, q=0 holds iff every coefficient
+        (a parameter polynomial) vanishes.  Returns:
+          None             -- q's leader is not an independent variable (skip);
+          ('NP', None)     -- a coefficient is a nonzero constant => inconsistent;
+          ('N', [c, ...])  -- the nonzero, non-constant parameter coefficients to
+                              force to zero (pushed to P; MakeTree routes them to N).
+        """
+        try:
+            lead = self.ld(q)
+        except Exception:
+            return None
+        if not any(lead == d for d in self.derivations):
+            return None
+        coeffs = []
+        for c in sympy.Poly(expand(sympy.sympify(q)), *self.derivations).coeffs():
+            c = SIM(c)
+            if c == 0:
+                continue
+            if is_constant(c):
+                return ('NP', None)
+            coeffs.append(c)
+        return ('N', coeffs)
 
     def _fmt_entry(self, v, parent, rule, full):
         """Render a sextuplet when it is entered into the tree.
@@ -837,17 +882,29 @@ class PRG(object):
                     if trace: _emit("     => Δ=0: pair already implied; drop it, requeue")
                     Br = _enq([nv], clbl, 'Δ=0 drop-pair') + Br
                 else:
-                    q = DIVIDE(q, list(ADD(V[S2], V[Sineq])) + list(V[W]))
-                    if is_constant(q):
-                        if trace: _emit("     => NP (constant after DIVIDE)")
+                    _ilc = self._indep_leader_coeffs(q)
+                    if _ilc is not None and _ilc[0] == 'NP':
+                        if trace: _emit("     => NP (indep-var leader, nonzero-constant coefficient)")
                         NP.append(V)
+                    elif _ilc is not None:
+                        nv = list(V)
+                        nv[D] = Extract(V[D], [pair])
+                        nv[P] = ADD(_ilc[1], V[P])
+                        if trace: _emit("     => indep-var leader (ld=%s): %d coefficient cond(s) -> N"
+                                        % (self._lds(q), len(_ilc[1])))
+                        Br = _enq([nv], clbl, 'indep-var coeffs') + Br
                     else:
-                        v1 = list(V)
-                        v1[D] = Extract(V[D], [pair])
-                        Br4 = self.MakeTree(q, v1)
-                        if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
-                                        % (self._lds(q), len(Br4)))
-                        Br = _enq(Br4, clbl, 'MakeTree/D') + Br
+                        q = DIVIDE(q, list(ADD(V[S2], V[Sineq])) + list(V[W]))
+                        if is_constant(q):
+                            if trace: _emit("     => NP (constant after DIVIDE)")
+                            NP.append(V)
+                        else:
+                            v1 = list(V)
+                            v1[D] = Extract(V[D], [pair])
+                            Br4 = self.MakeTree(q, v1)
+                            if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
+                                            % (self._lds(q), len(Br4)))
+                            Br = _enq(Br4, clbl, 'MakeTree/D') + Br
             elif sel is not None:   # 'P'
                 q0 = V[P][sel[1]]
                 q = q0
@@ -870,17 +927,28 @@ class PRG(object):
                     if trace: _emit("     => eqn=0: already implied; drop it, requeue")
                     Br = _enq([nv], clbl, 'eqn=0 drop') + Br
                 else:
-                    q = DIVIDE(q, list(ADD(V[S2], V[Sineq])) + list(V[W]))
-                    if is_constant(q):
-                        if trace: _emit("     => NP (constant after DIVIDE)")
+                    _ilc = self._indep_leader_coeffs(q)
+                    if _ilc is not None and _ilc[0] == 'NP':
+                        if trace: _emit("     => NP (indep-var leader, nonzero-constant coefficient)")
                         NP.append(V)
+                    elif _ilc is not None:
+                        nv = list(V)
+                        nv[P] = ADD(_ilc[1], Extract(V[P], [q0]))
+                        if trace: _emit("     => indep-var leader (ld=%s): %d coefficient cond(s) -> N"
+                                        % (self._lds(q), len(_ilc[1])))
+                        Br = _enq([nv], clbl, 'indep-var coeffs') + Br
                     else:
-                        v1 = list(V)
-                        v1[P] = Extract(V[P], [q0])
-                        Br4 = self.MakeTree(q, v1)
-                        if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
-                                        % (self._lds(q), len(Br4)))
-                        Br = _enq(Br4, clbl, 'MakeTree/P') + Br
+                        q = DIVIDE(q, list(ADD(V[S2], V[Sineq])) + list(V[W]))
+                        if is_constant(q):
+                            if trace: _emit("     => NP (constant after DIVIDE)")
+                            NP.append(V)
+                        else:
+                            v1 = list(V)
+                            v1[P] = Extract(V[P], [q0])
+                            Br4 = self.MakeTree(q, v1)
+                            if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
+                                            % (self._lds(q), len(Br4)))
+                            Br = _enq(Br4, clbl, 'MakeTree/P') + Br
             else:
                 if trace: _emit("     => Decom (terminal regular system)  ✓")
                 Decom.append(V)
