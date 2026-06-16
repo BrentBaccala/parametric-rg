@@ -102,40 +102,48 @@ class ParamRing(object):
         return self.to_sympy(r)
 
     def _normal_form_mixed(self, f, N):
-        """NormalForm where f also involves differential variables.
+        """NormalForm where f involves non-parameter variables.
 
-        Build a bigger ring QQ[diffvars][parms] and reduce.  We reduce the
-        parameter-coefficients of f modulo <N>.  Implementation: collect f as a
-        polynomial in the differential variables, reduce each coefficient
-        (which lives in QQ[parms]) modulo <N>."""
+        Faithful to Maple's ``Groebner[NormalForm](f, N, plex(op(parms)))``:
+        every variable NOT among the parameters -- the differential jets AND the
+        independent variables (x, y, z) -- is treated as a coefficient-field
+        element.  We view f as a polynomial in those non-parameter generators and
+        reduce each (pure-parameter) coefficient modulo <N>.  A non-parameter /
+        pure-coordinate f therefore has no parameter content to reduce and is
+        returned unchanged -- exactly as Maple does, and without the
+        normal_form <-> _normal_form_mixed recursion the old ``not jets`` branch
+        caused on such inputs."""
         f = sympy.expand(f)
-        # the differential generators are derivative jets + dependent-variable
-        # applications (NOT the bare independent variables inside them).
-        jets = sorted(f.atoms(sympy.Derivative) | f.atoms(sympy.Function), key=str)
-        if not jets:
-            return self.normal_form(f, N)
-        # substitute jets -> placeholder symbols so sympy.Poly treats them as gens
-        placeholders = {j: sympy.Symbol('_J%d' % i) for i, j in enumerate(jets)}
-        inv = {v: k for k, v in placeholders.items()}
-        fsub = f.xreplace(placeholders)
-        gensyms = [placeholders[j] for j in jets]
         Nlist = [self.to_sage(p) for p in N if sympy.sympify(p) != 0]
         if not Nlist:
             return f
         I = self.R.ideal(Nlist)
-        poly = sympy.Poly(fsub, *gensyms)
-        result = sympy.Integer(0)
-        for monom, coeff in poly.terms():
-            csym = sympy.expand(coeff)
-            if csym.free_symbols <= set(self.parms):
-                cred = self.to_sympy(I.reduce(self.to_sage(csym)))
-            else:
-                cred = csym
-            term = cred
-            for v, e in zip(gensyms, monom):
-                term = term * v**int(e)
-            result = result + term
-        return sympy.expand(result.xreplace(inv))
+        parmset = set(self.parms)
+        # Split each monomial of the expanded f into its parameter part and its
+        # non-parameter part (jets and/or independent variables -- whatever the
+        # ring notation uses: Function/Derivative OR Indexed/IndexedBase).  Group
+        # by non-parameter part, sum the parameter coefficients, and reduce each
+        # (pure-parameter) coefficient modulo <N>.  This is exactly Maple's
+        # NormalForm(., ., plex(parms)) -- non-parameter variables are coefficient-
+        # field elements -- without sympy.Poly, whose generator machinery breaks on
+        # Indexed bases (DPsi) that are contained in Indexed atoms (DPsi[x]).
+        groups = {}
+        for term in sympy.Add.make_args(f):
+            pcoeff = sympy.Integer(1)
+            ncoeff = sympy.Integer(1)
+            for fac in sympy.Mul.make_args(term):
+                if fac.free_symbols <= parmset:      # pure-parameter (incl. numbers)
+                    pcoeff = pcoeff * fac
+                else:
+                    ncoeff = ncoeff * fac
+            groups[ncoeff] = groups.get(ncoeff, sympy.S.Zero) + pcoeff
+        result = sympy.S.Zero
+        for ncoeff, pcoeff in groups.items():
+            pc = sympy.expand(pcoeff)
+            if pc != 0 and pc.free_symbols <= parmset:
+                pc = self.to_sympy(I.reduce(self.to_sage(pc)))
+            result = result + pc * ncoeff
+        return sympy.expand(result)
 
     def ideal_membership(self, f, N):
         """True if f in <N> (lex Groebner).  Analogue of IdealMembership."""
