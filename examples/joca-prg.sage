@@ -114,14 +114,19 @@ if os.environ.get('PRG_RUN', '1') == '1':
     WALL = int(os.environ.get('PRG_WALL', '90'))
     BUDGET = int(os.environ.get('PRG_BUDGET', '5000'))
 
-    # The faithful (post-SIM-fix) port splits Branch per factor, which deepens
-    # the MakeTree<->Branch recursion past CPython's default 1000-frame limit
-    # well BEFORE the genuine BLAD coefficient swell -- the run then dies with a
-    # RecursionError (a RuntimeError subclass) that masquerades as the time-box.
-    # Raise the limit (env PRG_RECLIMIT) and run MainProc in a thread with a big
-    # C stack so the deep Python recursion can't segfault.
+    # The faithful (post-SIM-fix) port splits Branch per factor, which can feed a
+    # pure-coordinate factor to paramring.normal_form and trigger an UNBOUNDED
+    # normal_form <-> _normal_form_mixed recursion (see the RECURSION-LIMITED
+    # branch below).  Because that loop is infinite, a higher recursion limit only
+    # makes it grind longer before erroring -- so we do NOT raise the limit by
+    # default; at CPython's default it fails fast (~1.4s) and is reported as the
+    # recursion bug.  PRG_RECLIMIT (>0) is an opt-in override for cases where a
+    # recursion is genuinely deep-but-finite; the big-stack thread then keeps a
+    # raised limit from segfaulting the C stack.
     import threading
-    sys.setrecursionlimit(int(os.environ.get('PRG_RECLIMIT', '1000000')))
+    _reclimit = int(os.environ.get('PRG_RECLIMIT', '0'))
+    if _reclimit > 0:
+        sys.setrecursionlimit(_reclimit)
     _hold = {}
 
     def _run_prg():
@@ -161,12 +166,15 @@ if os.environ.get('PRG_RUN', '1') == '1':
         if isinstance(ex, RecursionError):
             print("parametric RG RECURSION-LIMITED (%.1fs, limit=%d): %s"
                   % (dt, sys.getrecursionlimit(), ex))
-            print("  CAUSE: the per-factor Branch splitting (faithful SIM) deepens")
-            print("  the MakeTree/Branch recursion past the limit BEFORE reaching")
-            print("  the BLAD coefficient swell -- this is NOT the swell. Raise it")
-            print("  with PRG_RECLIMIT=<n> (currently %d) to run on to the genuine"
-                  % sys.getrecursionlimit())
-            print("  per-vertex reduction blowup.")
+            print("  CAUSE: an UNBOUNDED normal_form <-> _normal_form_mixed cycle in")
+            print("  paramring.py -- normal_form delegates any non-parameter input to")
+            print("  _normal_form_mixed, which (finding no differential jet) delegates")
+            print("  straight back.  It is triggered when the per-factor Branch")
+            print("  (faithful SIM) feeds a pure-coordinate factor -- x,y,z only, e.g.")
+            print("  an r-eliminant -- to normal_form.  This is NOT the coefficient")
+            print("  swell, and raising PRG_RECLIMIT will NOT clear it (an infinite")
+            print("  loop just fails slower); the fix belongs in _normal_form_mixed")
+            print("  (or in not calling normal_form on a pure-coordinate expression).")
         elif isinstance(ex, RuntimeError):
             print("parametric RG TIME-BOXED (%.1fs): %s" % (dt, ex))
             if hasattr(ex, 'partial'):
