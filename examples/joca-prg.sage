@@ -166,15 +166,10 @@ if os.environ.get('PRG_RUN', '1') == '1':
         if isinstance(ex, RecursionError):
             print("parametric RG RECURSION-LIMITED (%.1fs, limit=%d): %s"
                   % (dt, sys.getrecursionlimit(), ex))
-            print("  CAUSE: an UNBOUNDED normal_form <-> _normal_form_mixed cycle in")
-            print("  paramring.py -- normal_form delegates any non-parameter input to")
-            print("  _normal_form_mixed, which (finding no differential jet) delegates")
-            print("  straight back.  It is triggered when the per-factor Branch")
-            print("  (faithful SIM) feeds a pure-coordinate factor -- x,y,z only, e.g.")
-            print("  an r-eliminant -- to normal_form.  This is NOT the coefficient")
-            print("  swell, and raising PRG_RECLIMIT will NOT clear it (an infinite")
-            print("  loop just fails slower); the fix belongs in _normal_form_mixed")
-            print("  (or in not calling normal_form on a pure-coordinate expression).")
+            print("  A Python recursion hit the limit -- distinct from the wall/budget")
+            print("  time-box.  For a deep-but-finite recursion, raise it with")
+            print("  PRG_RECLIMIT=<n>; if it still does not converge, the recursion is")
+            print("  unbounded and a higher limit will not clear it.")
         elif isinstance(ex, RuntimeError):
             print("parametric RG TIME-BOXED (%.1fs): %s" % (dt, ex))
             if hasattr(ex, 'partial'):
