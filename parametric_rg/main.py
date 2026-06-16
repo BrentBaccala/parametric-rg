@@ -718,15 +718,15 @@ class PRG(object):
             T = self.CheckBranch(cur)
             if T is False:
                 if trace:
-                    _emit(">> v#%s  => NP (CheckBranch: inconsistent)  %.1fs"
-                          % (clbl, _time.time() - _vt))
+                    _emit(">> v#%s  => NP (CheckBranch: inconsistent)  %.1fs  t=%.1fs"
+                          % (clbl, _time.time() - _vt, _time.time() - t0))
                 NP.append(cur)
                 continue
             V = T
             if trace:
-                _emit(">> v#%s  processing  |A|=%d |P|=%d |D|=%d |N|=%d |W|=%d"
+                _emit(">> v#%s  processing  |A|=%d |P|=%d |D|=%d |N|=%d |W|=%d  t=%.1fs"
                       % (clbl, len(V[A]), len(V[P]), len(V[D]),
-                         len(V[N]), len(V[W])))
+                         len(V[N]), len(V[W]), _time.time() - t0))
             if V[D]:
                 # solve a critical pair via its DeltaPolynomial
                 pair = V[D][0]
