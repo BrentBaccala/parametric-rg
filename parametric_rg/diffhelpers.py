@@ -133,7 +133,7 @@ def SC(R, P, parms):
                 any_div = True
     if not any_div:
         return True
-    S = R.sort(P, 'increasing')
+    S = R.sort(P, 'ascending')   # binding accepts 'ascending'/'descending'
     if _same(S[1], P[1]):
         return True
     elif deg_in(R, S[1], R.leading_derivative(S[1])) == 1:

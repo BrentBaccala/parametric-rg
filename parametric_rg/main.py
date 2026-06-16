@@ -102,6 +102,54 @@ class PRG(object):
         s = str(e)
         return s if len(s) <= n else '%s..(%d terms)' % (s[:n], self._nterms(e))
 
+    def _deriv_parts(self, d):
+        """(base_function, {var: order}) for a leader; order-0 leaders -> {}."""
+        if isinstance(d, sympy.Derivative):
+            return d.expr, {v: c for v, c in d.variable_count}
+        return d, {}
+
+    def _pair_leader(self, pair):
+        """Selection rank-key for a critical pair: the lcm-derivative of its two
+        leaders (the common derivative RG differentiates both equations up to).
+        For same-base leaders this lifts the pair above either constituent
+        (Ps_x, Ps_y -> Ps_xy), so order-2 coherence pairs correctly defer behind
+        order-1 P-equations.  Different-base pairs fall back to the higher leader."""
+        a = self.ld(SIM(pair[0]))
+        b = self.ld(SIM(pair[1]))
+        ba, ca = self._deriv_parts(a)
+        bb, cb = self._deriv_parts(b)
+        if ba != bb:
+            return self.R.sort([a, b], 'ascending')[-1]
+        counts = {v: max(ca.get(v, 0), cb.get(v, 0)) for v in set(ca) | set(cb)}
+        if not counts:
+            return ba
+        args = []
+        for v, c in counts.items():
+            args += [v] * c
+        return sympy.Derivative(ba, *args)
+
+    def _select_lowest(self, V):
+        """Lowest-leader-first selection across pending P-equations and D-pairs
+        (BLAD bad_pick_and_remove_quadruple_lower_leader_first).  Returns
+        ('P', i) | ('D', i) | None; ties resolve P-before-D then lowest index."""
+        # Round-trip each leader through R.sort so its representation matches
+        # what R.sort returns below (R.sort re-canonicalises derivatives, so
+        # raw srepr keys would not match the sorted output's srepr).
+        norm = lambda d: self.R.sort([d], 'ascending')[0]
+        Pl = [norm(self.ld(SIM(e))) for e in V[P]]
+        Dl = [norm(self._pair_leader(pr)) for pr in V[D]]
+        leaders = Pl + Dl
+        if not leaders:
+            return None
+        ranked = self.R.sort(leaders, 'ascending')
+        rank = {}
+        for idx, d in enumerate(ranked):
+            rank.setdefault(sympy.srepr(d), idx)
+        cands = [(rank[sympy.srepr(d)], 0, i, 'P') for i, d in enumerate(Pl)]
+        cands += [(rank[sympy.srepr(d)], 1, i, 'D') for i, d in enumerate(Dl)]
+        _r, _k, i, kind = min(cands)
+        return (kind, i)
+
     def _fmt_entry(self, v, parent, rule, full):
         """Render a sextuplet when it is entered into the tree.
 
@@ -669,6 +717,21 @@ class PRG(object):
         full = (_tr.lower() == 'full')
         _dump_at = _os.environ.get('PRG_DUMP_AT')   # label whose critical pair
                                                     # (and chain) to dump in full
+        # PRG_PEQ_FIRST: mimic BLAD's lower-leader-first selection by draining
+        # pending P-equations before discharging critical pairs.  In this system
+        # every chain-rule coherence pair has an order-2 lcm-leader (e.g. Ps_xy)
+        # that outranks the order-<=1 DPs P-equations resolving it, so P-first
+        # coincides with lower-leader-first on exactly those pairs: the pair then
+        # reduces to 0 against the completed chain instead of forcing a split on
+        # its initial (the spurious Vf_y-style branches).  Confluence-safe (RG's
+        # decomposition is selection-order-independent for a fixed ranking).
+        _peq_first = bool(_os.environ.get('PRG_PEQ_FIRST'))
+        # PRG_LOWER_LEADER: true BLAD-style lowest-leader-first selection across
+        # both P-equations and critical pairs (keyed on the lcm-derivative for
+        # pairs).  Unlike PRG_PEQ_FIRST (drain-all-P-then-D, which front-loads the
+        # full chain), this discharges low-order coherence pairs while the chain
+        # is still small, before high-leader equations (the ODE) enter.
+        _lower_leader = bool(_os.environ.get('PRG_LOWER_LEADER'))
         self._lblctr = 0
 
         def _emit(s):
@@ -727,9 +790,19 @@ class PRG(object):
                 _emit(">> v#%s  processing  |A|=%d |P|=%d |D|=%d |N|=%d |W|=%d  t=%.1fs"
                       % (clbl, len(V[A]), len(V[P]), len(V[D]),
                          len(V[N]), len(V[W]), _time.time() - t0))
-            if V[D]:
+            # ---- choose the next work item ----
+            if _lower_leader and (V[D] or V[P]):
+                sel = self._select_lowest(V)
+            elif V[D] and not (_peq_first and V[P]):
+                sel = ('D', 0)
+            elif V[P]:
+                sel = ('P', 0)
+            else:
+                sel = None
+
+            if sel is not None and sel[0] == 'D':
                 # solve a critical pair via its DeltaPolynomial
-                pair = V[D][0]
+                pair = V[D][sel[1]]
                 if _dump_at is not None and str(clbl) == _dump_at:
                     _emit("==== DUMP critical pair at v#%s  (chain |A|=%d) ====" % (clbl, len(V[A])))
                     _emit("  pair[0] (ld=%s) = %s" % (self._lds(pair[0]), sympy.sympify(pair[0])))
@@ -760,7 +833,7 @@ class PRG(object):
                     NP.append(V)
                 elif q == 0:
                     nv = list(V)
-                    nv[D] = Extract(V[D], [V[D][0]])
+                    nv[D] = Extract(V[D], [pair])
                     if trace: _emit("     => Δ=0: pair already implied; drop it, requeue")
                     Br = _enq([nv], clbl, 'Δ=0 drop-pair') + Br
                 else:
@@ -770,13 +843,14 @@ class PRG(object):
                         NP.append(V)
                     else:
                         v1 = list(V)
-                        v1[D] = Extract(V[D], [V[D][0]])
+                        v1[D] = Extract(V[D], [pair])
                         Br4 = self.MakeTree(q, v1)
                         if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
                                         % (self._lds(q), len(Br4)))
                         Br = _enq(Br4, clbl, 'MakeTree/D') + Br
-            elif V[P]:
-                q = V[P][0]
+            elif sel is not None:   # 'P'
+                q0 = V[P][sel[1]]
+                q = q0
                 _qld = self._lds(q)
                 if V[N]:
                     q = self.nf(q, V[N])
@@ -792,7 +866,7 @@ class PRG(object):
                     NP.append(V)
                 elif q == 0:
                     nv = list(V)
-                    nv[P] = Extract(V[P], [V[P][0]])
+                    nv[P] = Extract(V[P], [q0])
                     if trace: _emit("     => eqn=0: already implied; drop it, requeue")
                     Br = _enq([nv], clbl, 'eqn=0 drop') + Br
                 else:
@@ -802,7 +876,7 @@ class PRG(object):
                         NP.append(V)
                     else:
                         v1 = list(V)
-                        v1[P] = Extract(V[P], [V[P][0]])
+                        v1[P] = Extract(V[P], [q0])
                         Br4 = self.MakeTree(q, v1)
                         if trace: _emit("     => MakeTree(q, ld=%s) -> %d child(ren)"
                                         % (self._lds(q), len(Br4)))
