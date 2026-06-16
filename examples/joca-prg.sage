@@ -111,13 +111,36 @@ print("   modulo the ansatz) coincides with joca.sage's prime decomposition.")
 if os.environ.get('PRG_RUN', '1') == '1':
     print("\n=== parametric RG on the hydrogen ansatz (constants as parameters) ===")
     solver = PRG(DiffRing, [x, y, z], constants)
-    t0 = time.time()
     WALL = int(os.environ.get('PRG_WALL', '90'))
     BUDGET = int(os.environ.get('PRG_BUDGET', '5000'))
-    try:
-        systems = solver.MainProc(ansatz, [], max_vertices=BUDGET,
-                                  wall_timeout=WALL, progress_every=10)
-        dt = time.time() - t0
+
+    # The faithful (post-SIM-fix) port splits Branch per factor, which deepens
+    # the MakeTree<->Branch recursion past CPython's default 1000-frame limit
+    # well BEFORE the genuine BLAD coefficient swell -- the run then dies with a
+    # RecursionError (a RuntimeError subclass) that masquerades as the time-box.
+    # Raise the limit (env PRG_RECLIMIT) and run MainProc in a thread with a big
+    # C stack so the deep Python recursion can't segfault.
+    import threading
+    sys.setrecursionlimit(int(os.environ.get('PRG_RECLIMIT', '1000000')))
+    _hold = {}
+
+    def _run_prg():
+        try:
+            _hold['systems'] = solver.MainProc(
+                ansatz, [], max_vertices=BUDGET, wall_timeout=WALL,
+                progress_every=10)
+        except BaseException as ex:          # RecursionError, RuntimeError, ...
+            _hold['exc'] = ex
+
+    threading.stack_size(1 << 30)            # 1 GiB C stack for deep recursion
+    t0 = time.time()
+    _worker = threading.Thread(target=_run_prg)
+    _worker.start()
+    _worker.join()
+    dt = time.time() - t0
+
+    if 'systems' in _hold:
+        systems = _hold['systems']
         print("parametric RG: %d regular systems (%.1fs)" % (len(systems), dt))
         for idx, (A, S, N, W) in enumerate(systems):
             chain = [p for p in A if sympy.sympify(p) != 0]
@@ -130,14 +153,29 @@ if os.environ.get('PRG_RUN', '1') == '1':
                        (sympy.expand(prem) if prem is not None else None))
             redundant = (prem_nf is not None and sympy.expand(prem_nf) == 0)
             print("  cell %d: N=%s W=%s  PDE-redundant=%s" % (idx, N, W, redundant))
-    except RuntimeError as ex:
-        dt = time.time() - t0
-        print("parametric RG TIME-BOXED (%.1fs): %s" % (dt, ex))
-        if hasattr(ex, 'partial'):
-            Decom, NP, brlen, cnt = ex.partial
-            print("  partial: |Decom|=%d |NP|=%d |Br-remaining|=%d vertices=%d"
-                  % (len(Decom), len(NP), brlen, cnt))
-        print("  CAUSE: per-vertex coefficient swell in the differential")
-        print("  reductions on the growing hydrogen chain (|Br| stays small --")
-        print("  NOT a parameter-tree-width explosion). This is the BLAD")
-        print("  factorwise-reduction blowup that section 1.12 motivates.")
+    else:
+        ex = _hold.get('exc')
+        # RecursionError is a RuntimeError subclass -- test it FIRST so the
+        # recursion-limit case is not mislabelled as the coefficient-swell
+        # time-box.
+        if isinstance(ex, RecursionError):
+            print("parametric RG RECURSION-LIMITED (%.1fs, limit=%d): %s"
+                  % (dt, sys.getrecursionlimit(), ex))
+            print("  CAUSE: the per-factor Branch splitting (faithful SIM) deepens")
+            print("  the MakeTree/Branch recursion past the limit BEFORE reaching")
+            print("  the BLAD coefficient swell -- this is NOT the swell. Raise it")
+            print("  with PRG_RECLIMIT=<n> (currently %d) to run on to the genuine"
+                  % sys.getrecursionlimit())
+            print("  per-vertex reduction blowup.")
+        elif isinstance(ex, RuntimeError):
+            print("parametric RG TIME-BOXED (%.1fs): %s" % (dt, ex))
+            if hasattr(ex, 'partial'):
+                Decom, NP, brlen, cnt = ex.partial
+                print("  partial: |Decom|=%d |NP|=%d |Br-remaining|=%d vertices=%d"
+                      % (len(Decom), len(NP), brlen, cnt))
+            print("  CAUSE: per-vertex coefficient swell in the differential")
+            print("  reductions on the growing hydrogen chain (|Br| stays small --")
+            print("  NOT a parameter-tree-width explosion). This is the BLAD")
+            print("  factorwise-reduction blowup that section 1.12 motivates.")
+        else:
+            raise ex
