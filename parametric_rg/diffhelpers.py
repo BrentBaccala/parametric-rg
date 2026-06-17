@@ -49,9 +49,10 @@ def leaderreduced(R, p, q):
     """True if leader(p) is reducible w.r.t leader(q)  (Maple leaderreduced)."""
     dp = R.leading_derivative(p)
     dq = R.leading_derivative(q)
-    if isinstance(dp, sympy.Symbol) or isinstance(dq, sympy.Symbol):
-        # a coordinate/parameter relation (bare-symbol leader) is not a
-        # differential reductor; see the note in isreduceble.
+    if dp in _indep(R) or dq in _indep(R):
+        # an independent-variable (coordinate-relation) leader is not a
+        # differential reductor; see the note in isreduceble. Parameter leaders
+        # are not guarded (Poly is well-defined for them).
         return False
     fdp = factor_deriv(R, dp)
     fdq = factor_deriv(R, dq)
@@ -71,14 +72,16 @@ def isreduceble(R, p, q):
     H = list(sympy.sympify(p).atoms(sympy.Derivative)) + \
         [s for s in sympy.sympify(p).free_symbols]
     dq = R.leading_derivative(q)
-    if isinstance(dq, sympy.Symbol):
-        # q's leader is a bare symbol (independent variable or parameter), so q
-        # is a coordinate/parameter relation, not a differential reductor.
-        # par-rga *crashes* here -- FactorDerivative(dq) raises 'dependent
-        # variable expected' (verified in Maple) -- so the original has no
-        # defined behaviour; factor_deriv's [1,var] convention is meant to make
+    if dq in _indep(R):
+        # q's leader is an INDEPENDENT VARIABLE: q is a coordinate relation, not
+        # a differential reductor. This is the only leader kind that crashes the
+        # port (deg_in -> Poly(p, x) raises when a jet of x is present) and the
+        # original (FactorDerivative(x) raises 'dependent variable expected',
+        # verified in Maple). factor_deriv's [1,var] convention is meant to make
         # such leaders non-reducible, so report not-reducible rather than
-        # spuriously matching the theta-factor branch ([1,var]==[1,var]).
+        # spuriously matching the theta branch ([1,x]==[1,x]). NOTE: parameter
+        # leaders (also bare symbols) are deliberately NOT guarded -- Poly(p,
+        # param) is well-defined, so they keep their original behaviour.
         return False
     fdq = factor_deriv(R, dq)
     degq = deg_in(R, q, dq)
