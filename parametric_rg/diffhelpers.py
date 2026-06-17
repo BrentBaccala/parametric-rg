@@ -12,7 +12,19 @@ from .util import GCD, SIM, ADD, Extract, member, _same
 
 
 def deg_in(R, p, leader):
-    return Poly(expand(sympy.sympify(p)), leader).degree()
+    """Degree of p in ``leader``, mirroring Maple's ``degree(p, leader)``.
+
+    Returns None (Maple's ``FAIL``) when p is not a polynomial in ``leader`` --
+    i.e. when ``leader`` is an independent variable occurring inside a jet's
+    arguments, e.g. degree(rho(x,y,z)**2 - x**2, x) = FAIL in Maple. sympy's
+    Poly *raises* PolynomialError there, so we catch it and return None; callers
+    must treat None like Maple treats FAIL (every ``<=``/``>`` against it is
+    false). par-rga relies on exactly this: Maple takes the false branch on
+    ``n <= FAIL`` and falls through to the theta-factor test."""
+    try:
+        return Poly(expand(sympy.sympify(p)), leader).degree()
+    except sympy.PolynomialError:
+        return None
 
 
 def factor_deriv(R, deriv):
@@ -37,11 +49,17 @@ def leaderreduced(R, p, q):
     """True if leader(p) is reducible w.r.t leader(q)  (Maple leaderreduced)."""
     dp = R.leading_derivative(p)
     dq = R.leading_derivative(q)
+    if isinstance(dp, sympy.Symbol) or isinstance(dq, sympy.Symbol):
+        # a coordinate/parameter relation (bare-symbol leader) is not a
+        # differential reductor; see the note in isreduceble.
+        return False
     fdp = factor_deriv(R, dp)
     fdq = factor_deriv(R, dq)
-    if dp == dq and deg_in(R, q, dq) <= deg_in(R, p, dp):
+    qd, pd = deg_in(R, q, dq), deg_in(R, p, dp)
+    cmp_ok = qd is not None and pd is not None   # Maple FAIL -> both <= and > false
+    if dp == dq and cmp_ok and qd <= pd:
         return True
-    elif dp == dq and deg_in(R, q, dq) > deg_in(R, p, dp):
+    elif dp == dq and cmp_ok and qd > pd:
         return False
     elif fdp[1] == fdq[1] and _divides(fdq[0], fdp[0]):
         return True
@@ -53,6 +71,15 @@ def isreduceble(R, p, q):
     H = list(sympy.sympify(p).atoms(sympy.Derivative)) + \
         [s for s in sympy.sympify(p).free_symbols]
     dq = R.leading_derivative(q)
+    if isinstance(dq, sympy.Symbol):
+        # q's leader is a bare symbol (independent variable or parameter), so q
+        # is a coordinate/parameter relation, not a differential reductor.
+        # par-rga *crashes* here -- FactorDerivative(dq) raises 'dependent
+        # variable expected' (verified in Maple) -- so the original has no
+        # defined behaviour; factor_deriv's [1,var] convention is meant to make
+        # such leaders non-reducible, so report not-reducible rather than
+        # spuriously matching the theta-factor branch ([1,var]==[1,var]).
+        return False
     fdq = factor_deriv(R, dq)
     degq = deg_in(R, q, dq)
     for dp in H:
@@ -61,9 +88,11 @@ def isreduceble(R, p, q):
             fdp = factor_deriv(R, dp)
         except Exception:
             continue
-        if dp == dq and degq <= deg_in(R, p, dp):
+        degp = deg_in(R, p, dp)
+        cmp_ok = degq is not None and degp is not None   # Maple FAIL -> both <= and > false
+        if dp == dq and cmp_ok and degq <= degp:
             return True
-        elif dp == dq and degq > deg_in(R, p, dp):
+        elif dp == dq and cmp_ok and degq > degp:
             continue
         elif fdp[1] == fdq[1] and _divides(fdq[0], fdp[0]):
             return True
