@@ -12,6 +12,10 @@ Tunable via env: PRG_WALL_S (seconds, default 300), PRG_WALL_RSS_MB (MiB,
 default 3000). Log to ~/hydrogen-walled-c200.log; do NOT clobber the baseline.
 """
 import os, sys, time, threading, traceback
+# Match the baseline run's lowest-leader-first selection (it was launched with
+# this env set, not in the script). Without it the worklist traversal — and so
+# the whole vertex trajectory — diverges from hydrogen-native-c200.log.run1-baseline.
+os.environ.setdefault('PRG_LOWER_LEADER', '1')
 sys.setrecursionlimit(1_000_000)
 sys.path.insert(0, os.path.expanduser('~/parametric-rg'))
 import sympy
