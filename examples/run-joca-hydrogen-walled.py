@@ -16,6 +16,10 @@ import os, sys, time, threading, traceback
 # this env set, not in the script). Without it the worklist traversal — and so
 # the whole vertex trajectory — diverges from hydrogen-native-c200.log.run1-baseline.
 os.environ.setdefault('PRG_LOWER_LEADER', '1')
+# Durably checkpoint each completed cell as it terminates (survives an OOM /
+# SIGKILL / interruption); without this the Decom list lives only in memory
+# and is printed once at the end. See main.py PRG_DECOM_FILE (commit 185038b).
+os.environ.setdefault('PRG_DECOM_FILE', os.path.expanduser('~/hydrogen-walled-c200.decom'))
 sys.setrecursionlimit(1_000_000)
 sys.path.insert(0, os.path.expanduser('~/parametric-rg'))
 import sympy
