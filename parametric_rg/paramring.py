@@ -67,6 +67,15 @@ class ParamRing(object):
         return sympy.expand(expr)
 
     # ---- Groebner / ideal operations ---------------------------------
+    def _std_reduce(self, I, f):
+        """Normal form of f modulo ideal I, forcing Singular's plain ``std``
+        (Buchberger) Groebner basis.  Mathematically identical to ``I.reduce(f)``
+        but avoids the heuristic ``groebner`` command's Hilbert-series path
+        (``stdhilb``), which is broken in some relocated conda Singular builds
+        (e.g. c200-1, where even ``groebner_basis([a0,a1])`` fails while
+        ``algorithm='singular:std'`` succeeds)."""
+        return f.reduce(list(I.groebner_basis(algorithm='singular:std')))
+
     def groebner_basis(self, polys):
         """Reduced lex Groebner basis of <polys> over QQ[parms] (as sympy list).
 
@@ -75,7 +84,7 @@ class ParamRing(object):
         if not sage_polys:
             return []
         I = self.R.ideal(sage_polys)
-        gb = I.groebner_basis()
+        gb = I.groebner_basis(algorithm='singular:std')
         return [self.to_sympy(g) for g in gb]
 
     def normal_form(self, f, N):
@@ -98,7 +107,7 @@ class ParamRing(object):
         if not Nlist:
             return sympy.expand(f)
         I = self.R.ideal(Nlist)
-        r = I.reduce(sage_f)
+        r = self._std_reduce(I, sage_f)
         return self.to_sympy(r)
 
     def _normal_form_mixed(self, f, N):
@@ -141,7 +150,7 @@ class ParamRing(object):
         for ncoeff, pcoeff in groups.items():
             pc = sympy.expand(pcoeff)
             if pc != 0 and pc.free_symbols <= parmset:
-                pc = self.to_sympy(I.reduce(self.to_sage(pc)))
+                pc = self.to_sympy(self._std_reduce(I, self.to_sage(pc)))
             result = result + pc * ncoeff
         return sympy.expand(result)
 
@@ -152,7 +161,7 @@ class ParamRing(object):
         if not Nlist:
             return sympy.sympify(f) == 0
         I = self.R.ideal(Nlist)
-        return I.reduce(self.to_sage(f)) == self.R(0)
+        return self._std_reduce(I, self.to_sage(f)) == self.R(0)
 
     def radical_membership(self, f, N):
         """True if f in radical(<N>).  Analogue of RadicalMembership.
@@ -185,7 +194,8 @@ class ParamRing(object):
 
         gens_list = [emb(p) for p in Nlist] + [1 - t * emb(f)]
         I = Rt.ideal(gens_list)
-        return Rt(1) in I
+        # `Rt(1) in I` would invoke the heuristic groebner (stdhilb); force std.
+        return Rt(1).reduce(list(I.groebner_basis(algorithm='singular:std'))) == Rt(0)
 
     def is_trivial(self, N):
         """True if <N> is the whole ring (i.e. 1 in <N>); GB == [1]."""
