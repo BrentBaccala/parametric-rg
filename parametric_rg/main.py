@@ -30,6 +30,27 @@ from .diffhelpers import (update, factor_deriv, leaderreduced, isreduceble,
 from .paramring import ParamRing
 
 
+class _WalledReduction(Exception):
+    """Raised when a per-vertex differential reduction breaches its time/RSS
+    wall (see MainProc's diffprem_wall_* knobs).  Carries ``.info`` (a dict
+    with 'why' and 'elapsed')."""
+    def __init__(self, info):
+        super().__init__(info.get('why', 'walled'))
+        self.info = info
+
+
+def _child_rss_mb(pid):
+    """Resident set size of pid in MiB, or None if unreadable."""
+    try:
+        with open('/proc/%d/status' % pid) as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) // 1024   # kB -> MiB
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 # vertex index names for readability
 A, P, D, Sineq, S2, N, W = 0, 1, 2, 3, 4, 5, 6
 LBL = 7   # optional trailing slot: a worklist label, set when a vertex is
@@ -97,6 +118,100 @@ class PRG(object):
             return expand(sympy.sympify(p))   # no jet content -> nothing to reduce
         h, r = self.R.differential_prem(p, full_redset, mode)
         return r
+
+    def _do_reduce(self, q, A, wall_s, wall_rss_mb):
+        """expand(diffprem(q, A)), optionally under a per-call fork wall.
+
+        With no wall set this is byte-identical to the inline call.  With a
+        wall, the reduction runs in a forked child (inputs ride copy-on-write,
+        so nothing is serialized in); the parent caps wall-clock and child RSS,
+        SIGKILLs on breach, and only an under-wall result is pickled back.  The
+        swollen object, if it forms, dies in the child and never crosses the
+        process boundary."""
+        if not (wall_s or wall_rss_mb):
+            return expand(self.diffprem(q, A))
+        return self._reduce_walled(q, A, wall_s, wall_rss_mb)
+
+    def _reduce_walled(self, q, A, wall_s, wall_rss_mb, poll=0.5):
+        import os as _os, select as _select, pickle as _pickle
+        import time as _time, signal as _signal
+        r_fd, w_fd = _os.pipe()
+        t0 = _time.time()
+        pid = _os.fork()
+        if pid == 0:                                   # ---- child ----
+            try:
+                _os.close(r_fd)
+                try:
+                    res = expand(self.diffprem(q, A))
+                    data = _pickle.dumps(('ok', res),
+                                         protocol=_pickle.HIGHEST_PROTOCOL)
+                except BaseException as ex:            # noqa: BLE001
+                    data = _pickle.dumps(('err', repr(ex)))
+                mv = memoryview(data)
+                while mv:
+                    n = _os.write(w_fd, mv[:1 << 20])
+                    mv = mv[n:]
+            finally:
+                _os._exit(0)                           # no atexit / no flush
+        # ---- parent ----
+        _os.close(w_fd)
+        buf = bytearray()
+        reason = None
+        try:
+            while True:
+                el = _time.time() - t0
+                if wall_s and el > wall_s:
+                    reason = 'time>%gs' % wall_s
+                    break
+                if wall_rss_mb:
+                    rss = _child_rss_mb(pid)
+                    if rss is not None and rss > wall_rss_mb:
+                        reason = 'rss>%dMB(peak~%dMB)' % (wall_rss_mb, rss)
+                        break
+                rl, _, _ = _select.select([r_fd], [], [], poll)
+                if r_fd in rl:
+                    chunk = _os.read(r_fd, 1 << 20)
+                    if not chunk:
+                        break                          # EOF: child done
+                    buf += chunk
+        finally:
+            if reason:
+                try:
+                    _os.kill(pid, _signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            _os.close(r_fd)
+            _os.waitpid(pid, 0)
+        if reason:
+            raise _WalledReduction({'why': reason, 'elapsed': _time.time() - t0})
+        if not buf:
+            raise RuntimeError("walled child produced no output")
+        tag, val = _pickle.loads(bytes(buf))
+        if tag == 'err':
+            raise RuntimeError("diffprem failed in walled child: %s" % val)
+        return val
+
+    def _record_walled(self, walled, walled_file, clbl, kind, leadlbl,
+                       nA, q_in, info, t0):
+        import time as _time, os as _os
+        try:
+            nin = self._nterms(q_in)
+        except Exception:
+            nin = -1
+        rec = {'cell_label': clbl, 'kind': kind, 'leader': leadlbl,
+               'nA': nA, 'in_terms': nin,
+               'why': info['why'], 'elapsed': info['elapsed']}
+        walled.append(rec)
+        if walled_file:
+            try:
+                with open(walled_file, 'a') as _wf:
+                    _wf.write("walled %d | v#%s | %s ld=%s | |A|=%d | "
+                              "in=%d terms | %s | t=%.1fs\n" % (
+                                  len(walled), clbl, kind, leadlbl, nA, nin,
+                                  info['why'], _time.time() - t0))
+                    _wf.flush(); _os.fsync(_wf.fileno())
+            except Exception:
+                pass
 
     def nf(self, f, Nlist):
         """Groebner[NormalForm](f, N, plex(parms))."""
@@ -761,7 +876,9 @@ class PRG(object):
     # MainProc  (Algorithm 4.1)
     # -----------------------------------------------------------------
     def MainProc(self, Pin, Qin=None, max_vertices=20000, wall_timeout=None,
-                 progress_every=0, minimal=False):
+                 progress_every=0, minimal=False,
+                 diffprem_wall_s=None, diffprem_wall_rss_mb=None,
+                 walled_file=None):
         if Qin is None:
             Qin = []
         """Run the parametric RG on equations Pin (=0) and inequations Qin (!=0).
@@ -825,6 +942,8 @@ class PRG(object):
 
         Decom = []
         NP = []
+        walled = []
+        self.walled = walled
         root = [[], list(Pin), [], list(Qin), [], [], []]
         Br = _enq([root], None, 'root')
         count = 0
@@ -889,7 +1008,19 @@ class PRG(object):
                 # par-rga reduces q by the parameter-derivatives first; those are
                 # 0 on the stock binding (parameters are constants), so skip.
                 _tp = _time.time()
-                q = expand(self.diffprem(q, V[A]))
+                try:
+                    q = self._do_reduce(q, V[A], diffprem_wall_s,
+                                        diffprem_wall_rss_mb)
+                except _WalledReduction as _wr:
+                    self._record_walled(walled, walled_file, clbl, 'D',
+                                        "%s,%s" % (self._lds(pair[0]),
+                                                   self._lds(pair[1])),
+                                        len(V[A]), q, _wr.info, t0)
+                    if progress_every:
+                        print("  [prg] vertex %d  WALLED (D-pair, %s)  %.0fs"
+                              % (count, _wr.info['why'], _time.time() - t0))
+                        _sys.stdout.flush()
+                    continue
                 _n1, _t1d = self._nterms(q), _time.time() - _tp
                 if V[N]:
                     q = self.nf(q, V[N])
@@ -937,7 +1068,17 @@ class PRG(object):
                 if V[N]:
                     q = self.nf(q, V[N])
                 _tp = _time.time()
-                q = expand(self.diffprem(q, V[A]))
+                try:
+                    q = self._do_reduce(q, V[A], diffprem_wall_s,
+                                        diffprem_wall_rss_mb)
+                except _WalledReduction as _wr:
+                    self._record_walled(walled, walled_file, clbl, 'P',
+                                        _qld, len(V[A]), q, _wr.info, t0)
+                    if progress_every:
+                        print("  [prg] vertex %d  WALLED (P-eqn, %s)  %.0fs"
+                              % (count, _wr.info['why'], _time.time() - t0))
+                        _sys.stdout.flush()
+                    continue
                 _t1d = _time.time() - _tp
                 q = SIM(q)
                 if trace:
