@@ -799,6 +799,9 @@ class PRG(object):
         # parameter-bearing conditions.  Makes the generic branch track BLAD's
         # single component, localising the divergence to the parametric splits.
         self._diff_basefield = bool(_os.environ.get('PRG_DIFF_BASEFIELD'))
+        # PRG_DECOM_FILE: append each terminal cell's (N,W) to this file as it is
+        # found, so a SIGKILL (OOM) on a long run does not lose the results.
+        _decom_file = _os.environ.get('PRG_DECOM_FILE')
         self._lblctr = 0
 
         def _emit(s):
@@ -974,6 +977,17 @@ class PRG(object):
             else:
                 if trace: _emit("     => Decom (terminal regular system)  ✓")
                 Decom.append(V)
+                if _decom_file:
+                    # durable per-cell checkpoint (survives an OOM SIGKILL)
+                    try:
+                        with open(_decom_file, 'a') as _df:
+                            _df.write("cell %d | v#%s | t=%.1fs | |A|=%d | N=%s | W=%s\n" % (
+                                len(Decom), clbl, _time.time() - t0, len(V[A]),
+                                sorted(str(expand(sympy.sympify(n))) for n in V[N]),
+                                sorted(str(expand(sympy.sympify(w))) for w in V[W])))
+                            _df.flush(); _os.fsync(_df.fileno())
+                    except Exception:
+                        pass
         # assemble [A, S+S2, N, W] for each terminal vertex
         systems = [[V[A], ADD(V[Sineq], V[S2]), V[N], V[W]] for V in Decom]
         de = self.checkregular(systems)
