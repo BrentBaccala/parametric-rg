@@ -70,6 +70,14 @@ class PRG(object):
             return False
         return any(lead == d for d in self.derivations)
 
+    def _param_free(self, c):
+        """True if condition c (an initial/separant) involves none of the
+        parameters -- a purely differential/jet condition.  Under
+        PRG_DIFF_BASEFIELD such a condition is SATURATED (kept nonzero, no
+        degenerate branch), mirroring BLAD's base field; only parameter-bearing
+        conditions are split into (N,W)."""
+        return not (sympy.sympify(c).free_symbols & set(self.parms))
+
     def diffprem(self, p, redset, mode='full'):
         """ParmDiffRed: differential pseudo-remainder of p by redset.
 
@@ -381,6 +389,8 @@ class PRG(object):
                 v1[D] = Bnew
                 v1[Sineq] = ADD(V[Sineq], [NC[1][0]])
                 v1[S2] = Z3
+                if getattr(self, '_diff_basefield', False) and self._param_free(NC[1][0]):
+                    return [v1]   # saturate parameter-free condition: drop degenerate
                 v2 = list(V)
                 v2[P] = RZ(ADD(Extract(V[P], [f, -f]), [NC[1][0], SIM(f1)]))
                 v2[D] = Extract(V[D], [f, -f])
@@ -419,6 +429,13 @@ class PRG(object):
                 v3[D] = Extract(V[D], [f, -f])
                 v3[Sineq] = ADD(P4, [NC[1][0]])
                 v3[S2] = Z2
+                if getattr(self, '_diff_basefield', False):
+                    out = [v1]   # saturate parameter-free conditions: drop their degenerates
+                    if not self._param_free(NC[1][0]):
+                        out.append(v2)
+                    if not self._param_free(NC[1][1]):
+                        out.append(v3)
+                    return out
                 return [v1, v2, v3]
 
     # -----------------------------------------------------------------
@@ -777,6 +794,11 @@ class PRG(object):
         # full chain), this discharges low-order coherence pairs while the chain
         # is still small, before high-leader equations (the ODE) enter.
         _lower_leader = bool(_os.environ.get('PRG_LOWER_LEADER'))
+        # PRG_DIFF_BASEFIELD: saturate parameter-free initials/separants (drop
+        # their degenerate =0 branch) like BLAD's base field, splitting only on
+        # parameter-bearing conditions.  Makes the generic branch track BLAD's
+        # single component, localising the divergence to the parametric splits.
+        self._diff_basefield = bool(_os.environ.get('PRG_DIFF_BASEFIELD'))
         self._lblctr = 0
 
         def _emit(s):
