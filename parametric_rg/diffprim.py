@@ -51,7 +51,17 @@ def theta_symbol(R, deriv):
     ``theta_monomial`` is a monomial in the independent variables (1 for an
     order-0 derivative / a parameter); ``symb`` is the underlying dependent
     variable (e.g. ``u(x, y)``)."""
-    theta, symb = R.factor_derivative(deriv)
+    try:
+        theta, symb = R.factor_derivative(deriv)
+    except RuntimeError:
+        # deriv is an independent variable / non-jet (coordinate relation): it
+        # has no (theta, symb) factorization. Callers (DeltaPolynomial via
+        # lcd_variable) should not reach here -- such leaders form no critical
+        # pairs (see diffhelpers.update). Surface a clear, catchable error
+        # rather than the binding's cryptic 'dependent variable expected'.
+        raise ValueError("theta_symbol: %r is not a derivative of a dependent "
+                         "variable (independent-variable / coordinate leader)"
+                         % (deriv,))
     return sympy.sympify(theta), symb
 
 

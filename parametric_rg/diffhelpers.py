@@ -244,10 +244,17 @@ def update(R, h, Gold, Bold, parms):
             Gnew = Extract(Gnew, [g])
     DD = ADD(Gnew, K)
     Cset = []
-    for dd in DD:
-        if _same(factor_deriv(R, R.leading_derivative(SIM(dd)))[1], d[1]):
-            pair = (SIM(dd), f)
-            Cset.append(pair)
+    # A coordinate relation (independent-variable leader) forms no differential
+    # critical pairs: its "leader" is not a derivative, so DeltaPolynomial ->
+    # theta_symbol -> R.factor_derivative raises 'dependent variable expected'.
+    # Skip pairs where either side has an independent-variable leader (same
+    # principle as the isreduceble/leaderreduced guards).
+    if R.leading_derivative(f) not in _indep(R):
+        for dd in DD:
+            ld_dd = R.leading_derivative(SIM(dd))
+            if ld_dd not in _indep(R) and _same(factor_deriv(R, ld_dd)[1], d[1]):
+                pair = (SIM(dd), f)
+                Cset.append(pair)
     T = Test(R, f, parms)
     Cwork = list(Cset)
     while Cwork:
